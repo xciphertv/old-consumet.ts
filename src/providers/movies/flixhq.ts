@@ -15,14 +15,14 @@ import { MixDrop, VidCloud } from '../../extractors';
 class FlixHQ extends MovieParser {
   override readonly name = 'FlixHQ';
   protected override baseUrl = 'https://flixhq.to';
-  protected override logo = 'https://upload.wikimedia.org/wikipedia/commons/7/7a/MyAnimeList_Logo.png';
+  protected override logo = 'https://img.flixhq.to/xxrz/400x400/100/ab/5f/ab5f0e1996cc5b71919e10e910ad593e/ab5f0e1996cc5b71919e10e910ad593e.png';
   protected override classPath = 'MOVIES.FlixHQ';
   override supportedTypes = new Set([TvType.MOVIE, TvType.TVSERIES]);
 
   /**
-   *
+   * Search for movies/TV shows
    * @param query search query string
-   * @param page page number (default 1) (optional)
+   * @param page page number (default 1)
    */
   override search = async (query: string, page: number = 1): Promise<ISearch<IMovieResult>> => {
     const searchResult: ISearch<IMovieResult> = {
@@ -65,8 +65,8 @@ class FlixHQ extends MovieParser {
   };
 
   /**
-   *
-   * @param mediaId media link or id
+   * Fetch media info (includes episodes for TV shows)
+   * @param mediaId media id or full URL
    */
   override fetchMediaInfo = async (mediaId: string): Promise<IMovieInfo> => {
     if (!mediaId.startsWith(this.baseUrl)) {
@@ -78,6 +78,7 @@ class FlixHQ extends MovieParser {
       title: '',
       url: mediaId,
     };
+
     try {
       const { data } = await this.client.get(mediaId);
       const $ = load(data);
@@ -121,13 +122,9 @@ class FlixHQ extends MovieParser {
       movieInfo.duration = $('span.item:nth-child(3)').text();
       movieInfo.rating = parseFloat($('span.item:nth-child(2)').text());
       movieInfo.recommendations = recommendationsArray as any;
-      const ajaxReqUrl = (id: string, type: string, isSeasons: boolean = false) =>
-        `${this.baseUrl}/ajax/${type === 'movie' ? type : `v2/${type}`}/${
-          isSeasons ? 'seasons' : 'episodes'
-        }/${id}`;
 
       if (movieInfo.type === TvType.TVSERIES) {
-        const { data } = await this.client.get(ajaxReqUrl(uid, 'tv', true));
+        const { data } = await this.client.get(`${this.baseUrl}/ajax/v2/tv/seasons/${uid}`);
         const $$ = load(data);
         const seasonsIds = $$('.dropdown-menu > a')
           .map((i, el) => $(el).attr('data-id'))
@@ -136,7 +133,7 @@ class FlixHQ extends MovieParser {
         movieInfo.episodes = [];
         let season = 1;
         for (const id of seasonsIds) {
-          const { data } = await this.client.get(ajaxReqUrl(id, 'season'));
+          const { data } = await this.client.get(`${this.baseUrl}/ajax/v2/season/episodes/${id}`);
           const $$$ = load(data);
 
           $$$('.nav > li')
@@ -170,10 +167,10 @@ class FlixHQ extends MovieParser {
   };
 
   /**
-   *
+   * Fetch episode sources
    * @param episodeId episode id
    * @param mediaId media id
-   * @param server server type (default `VidCloud`) (optional)
+   * @param server server type (default `VidCloud`)
    */
   override fetchEpisodeSources = async (
     episodeId: string,
@@ -207,65 +204,80 @@ class FlixHQ extends MovieParser {
     }
 
     try {
-      const servers = await this.fetchEpisodeServers(episodeId, mediaId);
+      // Get the watch page HTML to extract data-id
+      const watchPage = await this.client.get(
+        mediaId.startsWith(this.baseUrl) ? mediaId : `${this.baseUrl}/${mediaId}`
+      );
+      const $ = load(watchPage.data);
+      const dataId = $('.watch_block').attr('data-id');
+      
+      if (!dataId) {
+        throw new Error('Unable to find data-id from watch page');
+      }
 
+      // Fetch servers list using data-id
+      const servers = await this.fetchEpisodeServers(dataId, mediaId);
+      
       const i = servers.findIndex(s => s.name === server);
-
       if (i === -1) {
         throw new Error(`Server ${server} not found`);
       }
 
+      // Get actual video source URL
       const { data } = await this.client.get(
         `${this.baseUrl}/ajax/get_link/${servers[i].url.split('.').slice(-1).shift()}`
       );
 
-      const serverUrl: URL = new URL(data.link);
-
+      const serverUrl = new URL(data.link);
       return await this.fetchEpisodeSources(serverUrl.href, mediaId, server);
     } catch (err) {
-      console.log(err, 'err');
       throw new Error((err as Error).message);
     }
   };
 
   /**
-   *
-   * @param episodeId takes episode link or movie id
-   * @param mediaId takes movie link or id (found on movie info object)
+   * Fetch episode servers
+   * @param episodeId episode id or data-id
+   * @param mediaId media id/URL
    */
   override fetchEpisodeServers = async (episodeId: string, mediaId: string): Promise<IEpisodeServer[]> => {
-    if (!episodeId.startsWith(this.baseUrl + '/ajax') && !mediaId.includes('movie'))
-      episodeId = `${this.baseUrl}/ajax/v2/episode/servers/${episodeId}`;
-    else episodeId = `${this.baseUrl}/ajax/movie/episodes/${episodeId}`;
-
     try {
-      const { data } = await this.client.get(episodeId);
+      const isMovie = mediaId.includes('movie');
+      const ajaxUrl = isMovie
+        ? `${this.baseUrl}/ajax/movie/episodes/${episodeId}`
+        : `${this.baseUrl}/ajax/v2/episode/servers/${episodeId}`;
+
+      const { data } = await this.client.get(ajaxUrl);
       const $ = load(data);
 
-      const servers = $('.nav > li')
-        .map((i, el) => {
-          const server = {
-            name: mediaId.includes('movie')
-              ? $(el).find('a').attr('title')!.toLowerCase()
-              : $(el).find('a').attr('title')!.slice(6).trim().toLowerCase(),
+      const servers: IEpisodeServer[] = $('.nav > li')
+        .map((_, el) => {
+          const $el = $(el);
+          const $link = $el.find('a');
+          
+          return {
+            name: isMovie
+              ? $link.attr('title')?.toLowerCase() ?? ''
+              : $link.attr('title')?.slice(6).trim().toLowerCase() ?? '',
             url: `${this.baseUrl}/${mediaId}.${
-              !mediaId.includes('movie')
-                ? $(el).find('a').attr('data-id')
-                : $(el).find('a').attr('data-linkid')
+              !isMovie ? $link.attr('data-id') : $link.attr('data-linkid')
             }`.replace(
-              !mediaId.includes('movie') ? /\/tv\// : /\/movie\//,
-              !mediaId.includes('movie') ? '/watch-tv/' : '/watch-movie/'
+              !isMovie ? /\/tv\// : /\/movie\//,
+              !isMovie ? '/watch-tv/' : '/watch-movie/'
             ),
           };
-          return server;
         })
         .get();
+
       return servers;
     } catch (err) {
       throw new Error((err as Error).message);
     }
   };
 
+  /**
+   * Fetch recent movies
+   */
   fetchRecentMovies = async (): Promise<IMovieResult[]> => {
     try {
       const { data } = await this.client.get(`${this.baseUrl}/home`);
@@ -297,6 +309,9 @@ class FlixHQ extends MovieParser {
     }
   };
 
+  /**
+   * Fetch recent TV shows
+   */
   fetchRecentTvShows = async (): Promise<IMovieResult[]> => {
     try {
       const { data } = await this.client.get(`${this.baseUrl}/home`);
@@ -327,6 +342,9 @@ class FlixHQ extends MovieParser {
     }
   };
 
+  /**
+   * Fetch trending movies
+   */
   fetchTrendingMovies = async (): Promise<IMovieResult[]> => {
     try {
       const { data } = await this.client.get(`${this.baseUrl}/home`);
@@ -356,6 +374,9 @@ class FlixHQ extends MovieParser {
     }
   };
 
+  /**
+   * Fetch trending TV shows
+   */
   fetchTrendingTvShows = async (): Promise<IMovieResult[]> => {
     try {
       const { data } = await this.client.get(`${this.baseUrl}/home`);
@@ -384,6 +405,11 @@ class FlixHQ extends MovieParser {
     }
   };
 
+  /**
+   * Fetch content by country
+   * @param country country name/code
+   * @param page page number (default 1)
+   */
   fetchByCountry = async (country: string, page: number = 1): Promise<ISearch<IMovieResult>> => {
     const result: ISearch<IMovieResult> = {
       currentPage: page,
@@ -430,6 +456,11 @@ class FlixHQ extends MovieParser {
     }
   };
 
+  /**
+   * Fetch content by genre
+   * @param genre genre name
+   * @param page page number (default 1)
+   */
   fetchByGenre = async (genre: string, page: number = 1): Promise<ISearch<IMovieResult>> => {
     const result: ISearch<IMovieResult> = {
       currentPage: page,
@@ -478,14 +509,5 @@ class FlixHQ extends MovieParser {
     }
   };
 }
-
-// (async () => {
-//    const movie = new FlixHQ();
-//   // const search = await movie.search('the flash');
-//   // const movieInfo = await movie.fetchEpisodeSources('1168337', 'tv/watch-vincenzo-67955');
-//   // const recentTv = await movie.fetchTrendingTvShows();
-//    const genre = await movie.fetchByGenre('drama')
-//    console.log(movieInfo)
-// })();
 
 export default FlixHQ;
