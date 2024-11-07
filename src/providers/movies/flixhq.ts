@@ -199,15 +199,22 @@ class FlixHQ extends MovieParser {
     }
 
     try {
+      // Get server list using the new AJAX endpoint
       const servers = await this.fetchEpisodeServers(episodeId, mediaId);
-      const serverItem = servers.find(s => s.name === server);
+      const serverItem = servers.find(s => s.name.toLowerCase() === server.toLowerCase());
       
       if (!serverItem) {
         throw new Error(`Server ${server} not found`);
       }
 
-      const serverId = serverItem.url.split('.').pop() || serverItem.url.split('/').pop();
+      // Extract the server ID
+      const serverId = serverItem.url.split('=').pop() || serverItem.url.split('/').pop();
       
+      if (!serverId) {
+        throw new Error('Server ID not found');
+      }
+
+      // Get the source URL
       const { data } = await this.client.get(
         `${this.baseUrl}/ajax/get_link/${serverId}`
       );
@@ -228,44 +235,39 @@ class FlixHQ extends MovieParser {
    */
   override fetchEpisodeServers = async (episodeId: string, mediaId: string): Promise<IEpisodeServer[]> => {
     try {
-      const isMovie = mediaId.includes('movie');
-      let servers: IEpisodeServer[] = [];
+      // Use the new AJAX endpoint for getting the server list
+      const { data } = await this.client.get(`${this.baseUrl}/ajax/episode/list/${episodeId}`);
+      const $ = load(data);
 
-      if (episodeId.includes('episode/servers/')) {
-        const { data } = await this.client.get(episodeId);
-        const $ = load(data);
+      const servers: IEpisodeServer[] = $('.nav-item > a')
+        .map((_, el) => {
+          const $el = $(el);
+          return {
+            name: $el.text().toLowerCase().trim(),
+            url: `${this.baseUrl}${$el.attr('data-linkid')}`,
+          };
+        })
+        .get()
+        .filter(server => server.url && server.name);
 
-        servers = $('.nav > li')
+      // If no servers found, try alternate endpoint for series
+      if (servers.length === 0 && !mediaId.includes('movie')) {
+        const { data } = await this.client.get(`${this.baseUrl}/ajax/v2/episode/servers/${episodeId}`);
+        const $$ = load(data);
+
+        return $$('.nav-item > a')
           .map((_, el) => {
-            const $el = $(el);
-            const $link = $el.find('a');
+            const $el = $$(el);
             return {
-              name: $link.attr('title')?.toLowerCase().replace('server ', '').trim() ?? '',
-              url: $link.attr('data-linkid') ?? '',
+              name: $el.text().toLowerCase().trim(),
+              url: $el.attr('data-linkid') ?? '',
             };
           })
-          .get();
-      } else {
-        const endpoint = isMovie 
-          ? `/ajax/movie/episodes/${episodeId}` 
-          : `/ajax/v2/episode/servers/${episodeId}`;
-        
-        const { data } = await this.client.get(`${this.baseUrl}${endpoint}`);
-        const $ = load(data);
-
-        servers = $('.nav > li')
-          .map((_, el) => {
-            const $el = $(el);
-            const $link = $el.find('a');
-            return {
-              name: $link.attr('title')?.toLowerCase().replace('server ', '').trim() ?? '',
-              url: $link.attr('data-linkid') ?? $link.attr('data-id') ?? '',
-            };
-          })
-          .get();
+          .get()
+          .filter(server => server.url && server.name);
       }
 
-      return servers.filter(s => s.url && s.name);
+      return servers;
     } catch (err) {
       throw new Error((err as Error).message);
     }
