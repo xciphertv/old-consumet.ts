@@ -149,7 +149,7 @@ class FlixHQ extends MovieParser {
   /**
    * Fetch episode sources
    */
-  override fetchEpisodeSources = async (
+    override fetchEpisodeSources = async (
     episodeId: string,
     mediaId: string,
     server: StreamingServers = StreamingServers.UpCloud
@@ -183,22 +183,22 @@ class FlixHQ extends MovieParser {
     try {
       // Get servers list
       const servers = await this.fetchEpisodeServers(mediaId);
-      const serverItem = servers.find(s => s.name.toLowerCase() === server.toLowerCase());
+      const serverItem = servers.find(s => s.name === server.toLowerCase());
       
       if (!serverItem) {
         throw new Error(`Server ${server} not found`);
       }
 
-      // Extract source ID from the server URL
-      const { sourceId } = this.extractSourceId(serverItem.url);
+      // Extract linkId from server URL
+      const linkId = serverItem.url.split('.').pop() || '';
       
-      if (!sourceId) {
-        throw new Error('Source ID not found');
+      if (!linkId) {
+        throw new Error('Server ID not found');
       }
 
-      // Get the source using the new endpoint
+      // Get the source using the linkId
       const { data: sourceData } = await this.client.get(
-        `${this.baseUrl}/ajax/episode/sources/${sourceId}`
+        `${this.baseUrl}/ajax/episode/sources/${linkId}`
       );
 
       if (!sourceData?.link) {
@@ -215,25 +215,26 @@ class FlixHQ extends MovieParser {
   /**
    * Fetch episode servers
    */
-  override fetchEpisodeServers = async (mediaId: string): Promise<IEpisodeServer[]> => {
+   override fetchEpisodeServers = async (mediaId: string): Promise<IEpisodeServer[]> => {
     try {
-      const { data: episodeData } = await this.client.get(
+      const { data } = await this.client.get(
         `${this.baseUrl}/ajax/episode/list/${mediaId}`
       );
-      const $ = load(episodeData);
+      const $ = load(data);
 
       const servers: IEpisodeServer[] = [];
 
-      $('.nav-item').each((_, el) => {
-        const $server = $(el);
-        const $link = $server.find('a');
-        const name = $link.text().toLowerCase().trim();
-        const url = $link.attr('href') || '';
+      // Parse servers from the exact structure
+      $('.nav .nav-item').each((_, el) => {
+        const $link = $(el).find('a');
+        const name = $link.find('span').text().toLowerCase().trim();
+        const dataLinkId = $link.attr('data-linkid');
+        const href = $link.attr('href');
 
-        if (name && url) {
+        if (name && dataLinkId && href) {
           servers.push({
-            name: name.replace('server ', ''),
-            url: `${this.baseUrl}${url}`
+            name,
+            url: href.startsWith('/') ? `${this.baseUrl}${href}` : href
           });
         }
       });
@@ -243,7 +244,7 @@ class FlixHQ extends MovieParser {
       throw new Error((err as Error).message);
     }
   };
-
+  
   /**
    * Fetch recent movies
    */
