@@ -15,7 +15,7 @@ import {
 
 class DramaCool extends MovieParser {
   override readonly name = 'DramaCool';
-  protected override baseUrl = 'https://asianc.sh';
+  protected override baseUrl = 'https://asianc.co';
   protected override logo = 'https://play-lh.googleusercontent.com/IaCb2JXII0OV611MQ-wSA8v_SAs9XF6E3TMDiuxGGXo4wp9bI60GtDASIqdERSTO5XU';
   protected override classPath = 'MOVIES.DramaCool';
   override supportedTypes = new Set([TvType.MOVIE, TvType.TVSERIES]);
